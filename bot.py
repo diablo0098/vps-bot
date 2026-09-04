@@ -814,118 +814,56 @@ async def work(interaction: discord.Interaction):
         if now - last_work < timedelta(hours=1):
             remaining = timedelta(hours=1) - (now - last_work)
             minutes = remaining.seconds // 60
-            seconds = remaining.seconds % 60
             await interaction.response.send_message(
-                f"⏰ You are tired! Please wait **{minutes}m {seconds}s** before working again.",
+                f"⏰ You are tired! Please wait **{minutes} minutes** before working again.",
                 ephemeral=True
             )
             conn.close()
             return
 
-    reward = random.randint(5, 15)
-    jobs = [
-        "maintained the Cloud Server",
-        "fixed a Proxmox API bug",
-        "configured network firewall settings",
-        "optimized database queries",
-        "updated system packages"
-    ]
-    job_done = random.choice(jobs)
-
+    earned = random.randint(5, 15)
     cursor.execute('''
         INSERT INTO users (user_id, username, lc_balance, last_work)
         VALUES (?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             lc_balance = lc_balance + excluded.lc_balance,
             last_work = excluded.last_work
-    ''', (user_id, str(interaction.user), reward, now.isoformat()))
+    ''', (user_id, str(interaction.user), earned, now.isoformat()))
 
     conn.commit()
     conn.close()
 
-    log_action(user_id, interaction.user, "WORK", f"Earned {reward} LC for: {job_done}")
+    log_action(user_id, interaction.user, "WORK_EARNED", f"Earned {earned} LC")
     embed = discord.Embed(
-        title="🛠️ Work Completed!",
-        description=f"You {job_done} and earned **+{reward} LC**!",
+        title="💼 Work Completed!",
+        description=f"You completed your shift and earned **+{earned} LC**!",
         color=discord.Color.blue()
     )
     embed.set_footer(text=WATERMARK)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="help", description="Show all available commands and their descriptions")
-async def help_command(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="⚡ Legacy Cloud - Command Center",
-        description="Here is a complete list of commands available in the system:",
-        color=discord.Color.cyan()
-    )
-
-    embed.add_field(
-        name="🎮 User Commands",
-        value=(
-            "• `/balance` - Check your current LC wallet balance.\n"
-            "• `/daily` - Claim your daily reward (+25 LC every 24h).\n"
-            "• `/work` - Work to earn random LC coins (1h cooldown).\n"
-            "• `/deploy <os_type>` - Spend 50 LC to deploy a 10-Day LXC VPS.\n"
-            "• `/about` - Information about Legacy Cloud infrastructure.\n"
-            "• `/help` - View this help menu."
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="🛠️ Admin Commands",
-        value=(
-            "• `/admin-give-vps <user> <ram> <cpu> <disk> <os>` - Grant a lifetime custom LXC VPS.\n"
-            "• `/admin-give-kvm <user> <ram> <cpu> <disk>` - Grant a lifetime custom KVM VPS."
-        ),
-        inline=False
-    )
-
-    embed.set_footer(text=WATERMARK)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@bot.tree.command(name="about", description="Information about Legacy Cloud Bot")
-async def about(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="☁️ About Legacy Cloud Infrastructure",
-        description="Legacy Cloud is an automated hosting, coin economy, and virtual machine control system integrated directly into Discord.",
-        color=discord.Color.purple()
-    )
-    embed.add_field(
-        name="⚙️ Engine Features",
-        value=(
-            "• **Proxmox Virtualization API Engine**\n"
-            "• **SSH Remote Web Access (sshx & tmate)**\n"
-            "• **Flask Web Control Panel with Theme Support**\n"
-            "• **Automatic Expired Machine Backup & Purging**"
-        ),
-        inline=False
-    )
-    embed.add_field(name="👨‍💻 Credits", value="Developed by **devaru007 & Legacy Cloud**", inline=False)
-    embed.set_footer(text=WATERMARK)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-# Bot Lifetime Handlers
-
+# Discord Startup Lifecycle Logic
 @bot.event
 async def on_ready():
-    logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    logger.info(f"Bot authenticated as: {bot.user}")
     try:
         synced = await bot.tree.sync()
-        logger.info(f"Synced {len(synced)} command(s)")
+        logger.info(f"Successfully synchronized {len(synced)} slash commands.")
     except Exception as e:
-        logger.error(f"Failed to sync bot tree: {e}")
+        logger.error(f"Failed to sync commands: {e}")
 
     await bot.change_presence(activity=discord.Game(name=BOT_STATUS_NAME))
     
     if not cleanup_expired_vps.is_running():
         cleanup_expired_vps.start()
 
-    threading.Thread(target=run_web_dashboard, daemon=True).start()
+if __name__ == "__main__":
+    # Start web panel background thread
+    web_thread = threading.Thread(target=run_web_dashboard, daemon=True)
+    web_thread.start()
 
-if __name__ == '__main__':
+    # Start bot instance
     if TOKEN:
         bot.run(TOKEN)
     else:
-        logger.error("No discord bot TOKEN defined in environment file.")
+        logger.critical("Error: No bot TOKEN provided in .env parameters.")
