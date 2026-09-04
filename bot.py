@@ -180,7 +180,6 @@ HTML_TEMPLATE = '''
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Legacy Cloud - Admin Control Panel</title>
     <style>
-        /* CSS Variables per Theme */
         body[data-theme="cyberpunk"] {
             --bg-color: #0d0e15;
             --card-bg: #131520;
@@ -553,7 +552,7 @@ def run_web_dashboard():
 
 # Discord Commands - VPS Management
 
-@bot.tree.command(name="deploy", description="Deploy a 10-Day LXC VPS (10GB RAM, 2 CPU, 20GB Disk)")
+@bot.tree.command(name="deploy", description="Deploy a temporary (10-Day) LXC VPS using LC coins")
 @app_commands.describe(os_type="Operating System template")
 @app_commands.choices(os_type=[
     app_commands.Choice(name="Ubuntu 22.04", value="ubuntu"),
@@ -627,7 +626,7 @@ async def deploy(interaction: discord.Interaction, os_type: str):
         await interaction.followup.send("❌ Deployment failed.", ephemeral=True)
         conn.close()
 
-@bot.tree.command(name="admin-give-vps", description="Admin Only: Give a Lifetime LXC VPS with custom specs")
+@bot.tree.command(name="admin-give-vps", description="Admin Only: Give a Lifetime LXC VPS to any user")
 @app_commands.describe(target_user="Target User", ram="RAM in MB", cpu="CPU Cores", disk="Disk in GB", os_type="OS Template")
 @app_commands.choices(os_type=[
     app_commands.Choice(name="Ubuntu 22.04", value="ubuntu"),
@@ -682,7 +681,7 @@ async def admin_give_vps(interaction: discord.Interaction, target_user: discord.
     embed.set_footer(text=WATERMARK)
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="admin-give-kvm", description="Admin Only: Give a dedicated Lifetime KVM VPS with custom specs")
+@bot.tree.command(name="admin-give-kvm", description="Admin Only: Give a dedicated Lifetime KVM VPS to any user")
 @app_commands.describe(target_user="Target User", ram="RAM in MB", cpu="CPU Cores", disk="Disk size in GB")
 @app_commands.guild_only()
 async def admin_give_kvm(interaction: discord.Interaction, target_user: discord.User, ram: int, cpu: int, disk: int):
@@ -889,14 +888,37 @@ async def transfer(interaction: discord.Interaction, recipient: discord.User, am
     embed.set_footer(text=WATERMARK)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="about", description="View information about the bot and developer credits")
+@bot.tree.command(name="about", description="View detailed system information, features, and developer credits")
 async def about(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🤖 Legacy Cloud VPS Bot",
-        description="Proxmox & Virtual Host management bot with coin economy, automated backups, and custom admin overrides.",
+        description="A high-performance Proxmox & Virtual Host management bot featuring automated provisioning, integrated coin economy, web dashboard, and automated server backups.",
         color=discord.Color.blue()
     )
-    embed.add_field(name="👨‍💻 Developer Credits", value="Developed by **devaru007 & Legacy Cloud**", inline=False)
+    
+    embed.add_field(
+        name="⚡ Core Features",
+        value=(
+            "• **Automated Deployments:** Fast member & admin LXC/KVM server provisioning.\n"
+            "• **Coin Economy:** Earn LC via daily claims and tasks to fund instances.\n"
+            "• **Web Control Panel:** Dynamic multi-theme dashboard with real-time audit logs.\n"
+            "• **Auto Backups:** Server state preservation upon instance expiration."
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="📋 System Status",
+        value="• **Platform:** Legacy Cloud Engine\n• **Status:** Active & Operational",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="👨‍💻 Developer Credits",
+        value="Developed by **devaru007 & Legacy Cloud**",
+        inline=True
+    )
+    
     embed.set_footer(text=WATERMARK)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
