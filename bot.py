@@ -803,10 +803,10 @@ async def daily(interaction: discord.Interaction):
 async def work(interaction: discord.Interaction):
     user_id = interaction.user.id
     now = datetime.now(timezone.utc)
-    
+
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('SELECT last_work FROM users WHERE user_id = ?', (user_id,))
+    cursor.execute('SELECT lc_balance, last_work FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
 
     if row and row['last_work']:
@@ -814,52 +814,118 @@ async def work(interaction: discord.Interaction):
         if now - last_work < timedelta(hours=1):
             remaining = timedelta(hours=1) - (now - last_work)
             minutes = remaining.seconds // 60
+            seconds = remaining.seconds % 60
             await interaction.response.send_message(
-                f"⏰ You are tired! Rest for another **{minutes}m** before working again.",
+                f"⏰ You are tired! Please wait **{minutes}m {seconds}s** before working again.",
                 ephemeral=True
             )
             conn.close()
             return
 
-    earned = random.randint(5, 15)
+    reward = random.randint(5, 15)
+    jobs = [
+        "maintained the Cloud Server",
+        "fixed a Proxmox API bug",
+        "configured network firewall settings",
+        "optimized database queries",
+        "updated system packages"
+    ]
+    job_done = random.choice(jobs)
+
     cursor.execute('''
         INSERT INTO users (user_id, username, lc_balance, last_work)
         VALUES (?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
-            lc_balance = lc_balance + ?,
-            last_work = ?
-    ''', (user_id, str(interaction.user), earned, now.isoformat(), earned, now.isoformat()))
-    
+            lc_balance = lc_balance + excluded.lc_balance,
+            last_work = excluded.last_work
+    ''', (user_id, str(interaction.user), reward, now.isoformat()))
+
     conn.commit()
     conn.close()
 
-    log_action(user_id, interaction.user, "WORK", f"Earned {earned} LC")
+    log_action(user_id, interaction.user, "WORK", f"Earned {reward} LC for: {job_done}")
     embed = discord.Embed(
-        title="💼 Shift Completed!",
-        description=f"You worked hard and earned **+{earned} LC**!",
+        title="🛠️ Work Completed!",
+        description=f"You {job_done} and earned **+{reward} LC**!",
         color=discord.Color.blue()
     )
     embed.set_footer(text=WATERMARK)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+@bot.tree.command(name="help", description="Show all available commands and their descriptions")
+async def help_command(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="⚡ Legacy Cloud - Command Center",
+        description="Here is a complete list of commands available in the system:",
+        color=discord.Color.cyan()
+    )
+
+    embed.add_field(
+        name="🎮 User Commands",
+        value=(
+            "• `/balance` - Check your current LC wallet balance.\n"
+            "• `/daily` - Claim your daily reward (+25 LC every 24h).\n"
+            "• `/work` - Work to earn random LC coins (1h cooldown).\n"
+            "• `/deploy <os_type>` - Spend 50 LC to deploy a 10-Day LXC VPS.\n"
+            "• `/about` - Information about Legacy Cloud infrastructure.\n"
+            "• `/help` - View this help menu."
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🛠️ Admin Commands",
+        value=(
+            "• `/admin-give-vps <user> <ram> <cpu> <disk> <os>` - Grant a lifetime custom LXC VPS.\n"
+            "• `/admin-give-kvm <user> <ram> <cpu> <disk>` - Grant a lifetime custom KVM VPS."
+        ),
+        inline=False
+    )
+
+    embed.set_footer(text=WATERMARK)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="about", description="Information about Legacy Cloud Bot")
+async def about(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="☁️ About Legacy Cloud Infrastructure",
+        description="Legacy Cloud is an automated hosting, coin economy, and virtual machine control system integrated directly into Discord.",
+        color=discord.Color.purple()
+    )
+    embed.add_field(
+        name="⚙️ Engine Features",
+        value=(
+            "• **Proxmox Virtualization API Engine**\n"
+            "• **SSH Remote Web Access (sshx & tmate)**\n"
+            "• **Flask Web Control Panel with Theme Support**\n"
+            "• **Automatic Expired Machine Backup & Purging**"
+        ),
+        inline=False
+    )
+    embed.add_field(name="👨‍💻 Credits", value="Developed by **devaru007 & Legacy Cloud**", inline=False)
+    embed.set_footer(text=WATERMARK)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# Bot Lifetime Handlers
+
 @bot.event
 async def on_ready():
-    logger.info(f"Logged in as {bot.user.name} ({bot.user.id})")
+    logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
     try:
         synced = await bot.tree.sync()
         logger.info(f"Synced {len(synced)} command(s)")
     except Exception as e:
-        logger.error(f"Failed to sync commands: {e}")
+        logger.error(f"Failed to sync bot tree: {e}")
 
     await bot.change_presence(activity=discord.Game(name=BOT_STATUS_NAME))
+    
     if not cleanup_expired_vps.is_running():
         cleanup_expired_vps.start()
 
-if __name__ == "__main__":
-    t = threading.Thread(target=run_web_dashboard, daemon=True)
-    t.start()
-    
+    threading.Thread(target=run_web_dashboard, daemon=True).start()
+
+if __name__ == '__main__':
     if TOKEN:
         bot.run(TOKEN)
     else:
-        logger.error("No DISCORD_TOKEN provided in environment variables!")
+        logger.error("No discord bot TOKEN defined in environment file.")
