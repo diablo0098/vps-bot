@@ -42,4 +42,4 @@ cp .env.example .env
 nano .env 
 
 ```bash
-python bot.py
+python3 bot.py
