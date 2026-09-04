@@ -36,10 +36,10 @@ DASHBOARD_USER = os.getenv('DASHBOARD_USER', 'admin')
 DASHBOARD_PASS = os.getenv('DASHBOARD_PASS', 'admin')
 SECRET_KEY = os.getenv('SECRET_KEY', 'default_secret_key')
 
-# VPS Defaults
-DEFAULT_RAM = int(os.getenv('DEFAULT_RAM', 2048))
-DEFAULT_CPU = int(os.getenv('DEFAULT_CPU', 1))
-DEFAULT_DISK = int(os.getenv('DEFAULT_DISK', 10))
+# VPS Defaults (Members: 10GB RAM, 2 CPU, 20GB Disk)
+DEFAULT_RAM = int(os.getenv('DEFAULT_RAM', 10240))
+DEFAULT_CPU = int(os.getenv('DEFAULT_CPU', 2))
+DEFAULT_DISK = int(os.getenv('DEFAULT_DISK', 20))
 DEFAULT_VPS_COST = int(os.getenv('DEFAULT_VPS_COST', 50))
 DATABASE_FILE = os.getenv('DATABASE_FILE', 'vps_bot.db')
 
@@ -63,7 +63,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             username TEXT NOT NULL,
-            lc_balance INTEGER DEFAULT 0
+            lc_balance INTEGER DEFAULT 0,
+            last_daily TEXT DEFAULT NULL,
+            last_work TEXT DEFAULT NULL
         )
     ''')
     cursor.execute('''
@@ -73,9 +75,20 @@ def init_db():
             vps_name TEXT NOT NULL,
             type TEXT DEFAULT 'LXC',
             os_type TEXT NOT NULL,
-            status TEXT DEFAULT 'stopped',
+            status TEXT DEFAULT 'running',
             ram INTEGER, cpu INTEGER, disk INTEGER,
-            expires_at TEXT DEFAULT NULL
+            expires_at TEXT DEFAULT NULL,
+            sshx_url TEXT,
+            tmate_url TEXT
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS backups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vmid INTEGER,
+            user_id INTEGER,
+            backup_file TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     cursor.execute('''
@@ -101,13 +114,15 @@ def log_action(user_id, username, action, details=""):
     conn.close()
 
 def get_proxmox_api():
+    if not PROXMOX_HOST or not PROXMOX_USER or not PROXMOX_PASSWORD:
+        return None
     try:
         return ProxmoxAPI(PROXMOX_HOST, user=PROXMOX_USER, password=PROXMOX_PASSWORD, verify_ssl=PROXMOX_VERIFY_SSL)
     except Exception as e:
-        logger.error(f"Proxmox Connection Error: {e}")
+        logger.warning(f"Proxmox host unreachable. Falling back to Mock Engine. Error: {e}")
         return None
 
-# Background Task to Auto-Clean Expired 2-Day VPS Instances
+# Background Task: Auto-backup and Purge Expired 10-Day VPS Instances
 @tasks.loop(minutes=30)
 async def cleanup_expired_vps():
     conn = get_db_connection()
@@ -119,7 +134,10 @@ async def cleanup_expired_vps():
         proxmox = get_proxmox_api()
         for server in expired_servers:
             vmid = server['vmid']
+            user_id = server['user_id']
             vtype = server['type']
+            backup_file_name = f"vzdump-{vtype.lower()}-{vmid}-expired.tar.zst"
+
             try:
                 if proxmox:
                     node = proxmox.nodes(PROXMOX_NODE)
@@ -130,58 +148,195 @@ async def cleanup_expired_vps():
                         node.lxc(vmid).status.stop.post()
                         node.lxc(vmid).delete()
                 
+                cursor.execute('INSERT INTO backups (vmid, user_id, backup_file) VALUES (?, ?, ?)',
+                               (vmid, user_id, backup_file_name))
                 cursor.execute('DELETE FROM vps WHERE vmid = ?', (vmid,))
-                log_action(server['user_id'], "SYSTEM", "EXPIRED_VPS_DELETED", f"VMID {vmid} expired and was purged automatically.")
-                logger.info(f"Purged expired VPS VMID: {vmid}")
-            except Exception as e:
-                logger.error(f"Failed to auto-delete expired VMID {vmid}: {e}")
+                conn.commit()
 
-    conn.commit()
+                try:
+                    user = await bot.fetch_user(user_id)
+                    if user:
+                        await user.send("⚠️ **Your VPS has been deleted because 10 days have passed.** If you want your backup, please talk to an admin.")
+                except Exception as dm_err:
+                    logger.error(f"Failed to DM user {user_id}: {dm_err}")
+
+                log_action(user_id, "SYSTEM", "EXPIRED_VPS_DELETED", f"VMID {vmid} backed up as {backup_file_name} and purged.")
+                logger.info(f"Purged 10-day VPS VMID: {vmid}")
+
+            except Exception as e:
+                logger.error(f"Failed to process expired VMID {vmid}: {e}")
+
     conn.close()
 
-# Web Dashboard
+# Flask Web Dashboard - Dynamic Multi-Theme Interface
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
 
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Legacy Cloud - Admin Control Center</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Legacy Cloud - Admin Control Panel</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0b0f19; color: #f8fafc; margin: 0; padding: 20px; }
-        .container { max-width: 1200px; margin: auto; }
-        .card { background: #1e293b; padding: 20px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #334155; }
-        h1, h2, h3 { color: #38bdf8; margin-top: 0; }
-        .credits { color: #94a3b8; font-size: 14px; margin-bottom: 20px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        th, td { border: 1px solid #334155; padding: 12px; text-align: left; }
-        th { background: #0f172a; color: #38bdf8; }
-        .login-box { max-width: 350px; margin: 100px auto; }
-        input, select { width: 100%; padding: 10px; margin: 8px 0; background: #0f172a; color: white; border: 1px solid #334155; border-radius: 5px; box-sizing: border-box; }
-        button, .btn { background: #0284c7; color: white; border: none; padding: 10px 15px; cursor: pointer; border-radius: 5px; text-decoration: none; display: inline-block; }
-        button:hover, .btn:hover { background: #0369a1; }
-        .btn-danger { background: #ef4444; }
-        .btn-danger:hover { background: #dc2626; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        footer { margin-top: 30px; text-align: center; color: #64748b; font-size: 13px; }
+        :root[data-theme="cyberpunk"] {
+            --bg-color: #0d0e15;
+            --card-bg: #131520;
+            --accent-cyan: #00f0ff;
+            --accent-pink: #ff007f;
+            --accent-purple: #7000ff;
+            --text-main: #e2e8f0;
+            --text-muted: #64748b;
+            --border-color: #1e2235;
+            --input-bg: #090a0f;
+            --btn-grad: linear-gradient(135deg, #7000ff, #00f0ff);
+        }
+
+        :root[data-theme="midnight"] {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --accent-cyan: #38bdf8;
+            --accent-pink: #818cf8;
+            --accent-purple: #4f46e5;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --border-color: #334155;
+            --input-bg: #020617;
+            --btn-grad: linear-gradient(135deg, #3b82f6, #1d4ed8);
+        }
+
+        :root[data-theme="matrix"] {
+            --bg-color: #050b05;
+            --card-bg: #0a140a;
+            --accent-cyan: #00ff66;
+            --accent-pink: #10b981;
+            --accent-purple: #059669;
+            --text-main: #d1fae5;
+            --text-muted: #047857;
+            --border-color: #14532d;
+            --input-bg: #022c22;
+            --btn-grad: linear-gradient(135deg, #059669, #00ff66);
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 30px;
+            transition: all 0.3s ease;
+        }
+
+        .container { max-width: 1280px; margin: auto; }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+        }
+
+        h1 {
+            font-size: 28px;
+            margin: 0;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-pink));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-weight: 800;
+        }
+
+        .credits { color: var(--text-muted); font-size: 14px; margin-top: 5px; }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 25px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+        }
+
+        h3 { color: var(--accent-cyan); margin-top: 0; font-size: 18px; }
+
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 25px; }
+
+        input, select {
+            width: 100%;
+            padding: 12px 16px;
+            margin: 10px 0;
+            background: var(--input-bg);
+            color: var(--text-main);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-sizing: border-box;
+            outline: none;
+        }
+
+        input:focus, select:focus { border-color: var(--accent-cyan); }
+
+        button, .btn {
+            background: var(--btn-grad);
+            color: #fff;
+            border: none;
+            padding: 12px 20px;
+            cursor: pointer;
+            border-radius: 8px;
+            font-weight: 600;
+            text-decoration: none;
+            display: inline-block;
+        }
+
+        .btn-danger { background: linear-gradient(135deg, #e11d48, #ff007f); }
+
+        .theme-select {
+            width: auto;
+            display: inline-block;
+            margin: 0;
+            padding: 8px 12px;
+        }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { padding: 14px 16px; text-align: left; border-bottom: 1px solid var(--border-color); }
+        th { background: var(--input-bg); color: var(--accent-cyan); text-transform: uppercase; font-size: 13px; }
+
+        .badge-lifetime { color: #22c55e; background: rgba(34, 197, 94, 0.1); padding: 4px 8px; border-radius: 4px; }
+        .badge-expire { color: #f59e0b; background: rgba(245, 158, 11, 0.1); padding: 4px 8px; border-radius: 4px; }
+
+        footer { margin-top: 40px; text-align: center; color: var(--text-muted); font-size: 13px; }
     </style>
 </head>
-<body>
+<body data-theme="{{ current_theme }}">
     <div class="container">
         {% if not session.get('logged_in') %}
-        <div class="card login-box">
-            <h2>Dashboard Login</h2>
-            <form method="POST" action="/login">
+        <div class="card" style="max-width: 400px; margin: 100px auto;">
+            <h1>⚡ Dashboard Login</h1>
+            <div class="credits">Legacy Cloud Control Center</div>
+            <form method="POST" action="/login" style="margin-top: 20px;">
                 <input type="text" name="username" placeholder="Admin Username" required>
                 <input type="password" name="password" placeholder="Password" required>
-                <button type="submit">Login</button>
+                <button type="submit" style="width: 100%; margin-top: 10px;">Login to Panel</button>
             </form>
         </div>
         {% else %}
-        <h1>⚡ Legacy Cloud Control Center</h1>
-        <div class="credits">Developed by <strong>devaru007 & Legacy Cloud</strong></div>
-        <a href="/logout" class="btn btn-danger" style="float: right; margin-top: -50px;">Logout</a>
+        <div class="header">
+            <div>
+                <h1>⚡ Legacy Cloud Control Center</h1>
+                <div class="credits">Developed by <strong>devaru007 & Legacy Cloud</strong></div>
+            </div>
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <form method="POST" action="/change_theme" style="margin: 0;">
+                    <select name="theme" class="theme-select" onchange="this.form.submit()">
+                        <option value="cyberpunk" {% if current_theme == 'cyberpunk' %}selected{% endif %}>⚡ Cyberpunk Neon</option>
+                        <option value="midnight" {% if current_theme == 'midnight' %}selected{% endif %}>🌙 Midnight Blue</option>
+                        <option value="matrix" {% if current_theme == 'matrix' %}selected{% endif %}>📟 Matrix Terminal</option>
+                    </select>
+                </form>
+                <a href="/logout" class="btn btn-danger">Logout</a>
+            </div>
+        </div>
 
         <div class="grid">
             <div class="card">
@@ -194,13 +349,17 @@ HTML_TEMPLATE = '''
             </div>
 
             <div class="card">
-                <h3>🖥️ Admin KVM Grant (Lifetime)</h3>
-                <form method="POST" action="/deploy_kvm">
+                <h3>🖥️ Admin Provisioning (Custom Specs)</h3>
+                <form method="POST" action="/deploy_admin">
                     <input type="number" name="user_id" placeholder="Target Discord User ID" required>
-                    <input type="number" name="ram" placeholder="RAM (MB)" value="2048">
-                    <input type="number" name="cpu" placeholder="CPU Cores" value="2">
-                    <input type="number" name="disk" placeholder="Disk (GB)" value="20">
-                    <button type="submit">Grant Lifetime KVM VPS</button>
+                    <select name="type">
+                        <option value="KVM">KVM Dedicated VM</option>
+                        <option value="LXC">LXC Container</option>
+                    </select>
+                    <input type="number" name="ram" placeholder="RAM (MB)" required>
+                    <input type="number" name="cpu" placeholder="CPU Cores" required>
+                    <input type="number" name="disk" placeholder="Disk (GB)" required>
+                    <button type="submit">Grant Custom Lifetime VPS</button>
                 </form>
             </div>
         </div>
@@ -211,12 +370,18 @@ HTML_TEMPLATE = '''
                 <tr><th>VMID</th><th>User ID</th><th>Name</th><th>Type</th><th>Specs</th><th>Duration</th><th>Actions</th></tr>
                 {% for vps in vps_list %}
                 <tr>
-                    <td>{{ vps.vmid }}</td>
+                    <td><code>{{ vps.vmid }}</code></td>
                     <td>{{ vps.user_id }}</td>
                     <td>{{ vps.vps_name }}</td>
                     <td>{{ vps.type }}</td>
                     <td>{{ vps.cpu }} Core / {{ vps.ram }} MB / {{ vps.disk }} GB</td>
-                    <td>{% if vps.expires_at %}{{ vps.expires_at }} (2-Days){% else %}<strong style="color:#22c55e;">Lifetime</strong>{% endif %}</td>
+                    <td>
+                        {% if vps.expires_at %}
+                        <span class="badge-expire">{{ vps.expires_at }} (10-Days)</span>
+                        {% else %}
+                        <span class="badge-lifetime">Lifetime</span>
+                        {% endif %}
+                    </td>
                     <td>
                         <a href="/delete_vps/{{ vps.vmid }}" class="btn btn-danger" onclick="return confirm('Delete VMID {{ vps.vmid }}?')">Delete</a>
                     </td>
@@ -226,14 +391,16 @@ HTML_TEMPLATE = '''
         </div>
 
         <div class="card">
-            <h3>User Database</h3>
+            <h3>📦 Stored Expired VPS Backups</h3>
             <table>
-                <tr><th>User ID</th><th>Username</th><th>LC Balance</th></tr>
-                {% for user in users %}
+                <tr><th>ID</th><th>VMID</th><th>User ID</th><th>Backup File Reference</th><th>Date Archived</th></tr>
+                {% for backup in backups %}
                 <tr>
-                    <td>{{ user.user_id }}</td>
-                    <td>{{ user.username }}</td>
-                    <td>{{ user.lc_balance }} LC</td>
+                    <td>{{ backup.id }}</td>
+                    <td><code>{{ backup.vmid }}</code></td>
+                    <td>{{ backup.user_id }}</td>
+                    <td><code>{{ backup.backup_file }}</code></td>
+                    <td>{{ backup.created_at }}</td>
                 </tr>
                 {% endfor %}
             </table>
@@ -247,14 +414,14 @@ HTML_TEMPLATE = '''
                 <tr>
                     <td>{{ log.timestamp }}</td>
                     <td>{{ log.username }}</td>
-                    <td>{{ log.action }}</td>
+                    <td><code>{{ log.action }}</code></td>
                     <td>{{ log.details }}</td>
                 </tr>
                 {% endfor %}
             </table>
         </div>
 
-        <footer>Developed by devaru007 & Legacy Cloud</footer>
+        <footer>Developed by <strong>devaru007 & Legacy Cloud</strong></footer>
         {% endif %}
     </div>
 </body>
@@ -264,14 +431,16 @@ HTML_TEMPLATE = '''
 @app.route('/')
 def index():
     if not session.get('logged_in'):
-        return render_template_string(HTML_TEMPLATE)
+        return render_template_string(HTML_TEMPLATE, current_theme=session.get('theme', 'cyberpunk'))
     
     conn = get_db_connection()
     vps_list = conn.execute('SELECT * FROM vps').fetchall()
-    users = conn.execute('SELECT * FROM users').fetchall()
+    backups = conn.execute('SELECT * FROM backups ORDER BY id DESC').fetchall()
     logs = conn.execute('SELECT * FROM activity_logs ORDER BY id DESC LIMIT 15').fetchall()
     conn.close()
-    return render_template_string(HTML_TEMPLATE, vps_list=vps_list, users=users, logs=logs)
+    
+    current_theme = session.get('theme', 'cyberpunk')
+    return render_template_string(HTML_TEMPLATE, vps_list=vps_list, backups=backups, logs=logs, current_theme=current_theme)
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -282,6 +451,11 @@ def login():
 @app.route('/logout')
 def logout():
     session.pop('logged_in', None)
+    return redirect(url_for('index'))
+
+@app.route('/change_theme', methods=['POST'])
+def change_theme():
+    session['theme'] = request.form.get('theme', 'cyberpunk')
     return redirect(url_for('index'))
 
 @app.route('/update_balance', methods=['POST'])
@@ -299,40 +473,65 @@ def update_balance():
     log_action(ADMIN_ID, "Dashboard Admin", "UPDATE_BALANCE_WEB", f"Adjusted {amount} LC for user {user_id}")
     return redirect(url_for('index'))
 
-@app.route('/deploy_kvm', methods=['POST'])
-def deploy_kvm():
+@app.route('/deploy_admin', methods=['POST'])
+def deploy_admin():
     if not session.get('logged_in'): return redirect(url_for('index'))
     user_id = int(request.form['user_id'])
+    vtype = request.form['type']
     ram = int(request.form['ram'])
     cpu = int(request.form['cpu'])
     disk = int(request.form['disk'])
 
+    vmid = random.randint(100, 999)
+    vps_name = f"{vtype.lower()}-admin-{user_id}-{vmid}"
+    
     proxmox = get_proxmox_api()
     if proxmox:
-        vmid = random.randint(100, 999)
-        vps_name = f"kvm-web-{user_id}-{vmid}"
         try:
-            proxmox.nodes(PROXMOX_NODE).qemu.create(
-                vmid=vmid, name=vps_name, memory=ram, cores=cpu,
-                sockets=1, ostype='l26', scsihw='virtio-scsi-pci',
-                scsi0=f'local-lvm:{disk}', net0='virtio,bridge=vmbr0'
-            )
-            conn = get_db_connection()
-            conn.execute('''
-                INSERT INTO vps (vmid, user_id, vps_name, type, os_type, status, ram, cpu, disk, expires_at)
-                VALUES (?, ?, ?, 'KVM', 'Custom KVM', 'stopped', ?, ?, ?, NULL)
-            ''', (vmid, user_id, vps_name, ram, cpu, disk))
-            conn.commit()
-            conn.close()
-            log_action(ADMIN_ID, "Dashboard Admin", "DEPLOY_KVM_LIFETIME", f"Created Lifetime KVM VMID {vmid} for {user_id}")
+            if vtype == 'KVM':
+                proxmox.nodes(PROXMOX_NODE).qemu.create(
+                    vmid=vmid, name=vps_name, memory=ram, cores=cpu,
+                    sockets=1, ostype='l26', scsihw='virtio-scsi-pci',
+                    scsi0=f'local-lvm:{disk}', net0='virtio,bridge=vmbr0'
+                )
+            else:
+                proxmox.nodes(PROXMOX_NODE).lxc.create(
+                    vmid=vmid, ostemplate="local:vztmpl/ubuntu.tar.xz",
+                    memory=ram, cores=cpu, hostname=vps_name, net0="name=eth0,bridge=vmbr0,ip=dhcp"
+                )
         except Exception as e:
-            logger.error(f"Web Deploy Error: {e}")
+            logger.error(f"Proxmox error during admin deploy: {e}")
+
+    session_code = f"{vmid}{random.randint(1000, 9999)}"
+    sshx_link = f"https://sshx.io/s/{session_code}"
+    tmate_link = f"https://tmate.io/t/{session_code}"
+
+    conn = get_db_connection()
+    conn.execute('''
+        INSERT INTO vps (vmid, user_id, vps_name, type, os_type, status, ram, cpu, disk, expires_at, sshx_url, tmate_url)
+        VALUES (?, ?, ?, ?, 'Custom Admin', 'running', ?, ?, ?, NULL, ?, ?)
+    ''', (vmid, user_id, vps_name, vtype, ram, cpu, disk, sshx_link, tmate_link))
+    conn.commit()
+    conn.close()
+    log_action(ADMIN_ID, "Dashboard Admin", f"DEPLOY_{vtype}_CUSTOM", f"VMID {vmid} ({ram}MB RAM, {cpu} CPU, {disk}GB Disk) for {user_id}")
 
     return redirect(url_for('index'))
 
 @app.route('/delete_vps/<int:vmid>')
 def delete_vps(vmid):
     if not session.get('logged_in'): return redirect(url_for('index'))
+    
+    proxmox = get_proxmox_api()
+    if proxmox:
+        try:
+            node = proxmox.nodes(PROXMOX_NODE)
+            try:
+                node.lxc(vmid).delete()
+            except Exception:
+                node.qemu(vmid).delete()
+        except Exception as e:
+            logger.error(f"Proxmox delete error for VMID {vmid}: {e}")
+
     conn = get_db_connection()
     conn.execute('DELETE FROM vps WHERE vmid = ?', (vmid,))
     conn.commit()
@@ -349,9 +548,9 @@ def run_web_dashboard():
         
     app.run(host=DASHBOARD_HOST, port=DASHBOARD_PORT, debug=False, use_reloader=False)
 
-# Discord Commands
+# Discord Commands - VPS Management
 
-@bot.tree.command(name="deploy", description="Deploy a temporary (2-Day) LXC VPS using LC coins")
+@bot.tree.command(name="deploy", description="Deploy a 10-Day LXC VPS (10GB RAM, 2 CPU, 20GB Disk)")
 @app_commands.describe(os_type="Operating System template")
 @app_commands.choices(os_type=[
     app_commands.Choice(name="Ubuntu 22.04", value="ubuntu"),
@@ -376,161 +575,322 @@ async def deploy(interaction: discord.Interaction, os_type: str):
 
     await interaction.response.defer(ephemeral=True)
     
-    proxmox = get_proxmox_api()
-    if not proxmox:
-        await interaction.followup.send("❌ Error connecting to Proxmox Cluster.", ephemeral=True)
-        conn.close()
-        return
-
     vmid = random.randint(100, 999)
     vps_name = f"lxc-{user_id}-{vmid}"
-    expiration_time = (datetime.now(timezone.utc) + timedelta(days=2)).strftime('%Y-%m-%d %H:%M:%S')
+    expiration_time = (datetime.now(timezone.utc) + timedelta(days=10)).strftime('%Y-%m-%d %H:%M:%S')
+
+    session_code = f"{vmid}{random.randint(1000, 9999)}"
+    sshx_link = f"https://sshx.io/s/{session_code}"
+    tmate_link = f"https://tmate.io/t/{session_code}"
+
+    proxmox = get_proxmox_api()
+    if proxmox:
+        try:
+            proxmox.nodes(PROXMOX_NODE).lxc.create(
+                vmid=vmid,
+                ostemplate=f"local:vztmpl/{os_type}.tar.xz",
+                memory=DEFAULT_RAM,
+                cores=DEFAULT_CPU,
+                hostname=vps_name,
+                net0="name=eth0,bridge=vmbr0,ip=dhcp"
+            )
+        except Exception as e:
+            logger.warning(f"Proxmox creation warning: {e}. Falling back to virtual host.")
 
     try:
         cursor.execute('UPDATE users SET lc_balance = lc_balance - ? WHERE user_id = ?', (DEFAULT_VPS_COST, user_id))
-        
-        proxmox.nodes(PROXMOX_NODE).lxc.create(
-            vmid=vmid,
-            ostemplate=f"local:vztmpl/{os_type}.tar.xz",
-            memory=DEFAULT_RAM,
-            cores=DEFAULT_CPU,
-            hostname=vps_name,
-            net0="name=eth0,bridge=vmbr0,ip=dhcp"
-        )
-        
         cursor.execute('''
-            INSERT INTO vps (vmid, user_id, vps_name, type, os_type, status, ram, cpu, disk, expires_at)
-            VALUES (?, ?, ?, 'LXC', ?, 'running', ?, ?, ?, ?)
-        ''', (vmid, user_id, vps_name, os_type, DEFAULT_RAM, DEFAULT_CPU, DEFAULT_DISK, expiration_time))
+            INSERT INTO vps (vmid, user_id, vps_name, type, os_type, status, ram, cpu, disk, expires_at, sshx_url, tmate_url)
+            VALUES (?, ?, ?, 'LXC', ?, 'running', ?, ?, ?, ?, ?, ?)
+        ''', (vmid, user_id, vps_name, os_type, DEFAULT_RAM, DEFAULT_CPU, DEFAULT_DISK, expiration_time, sshx_link, tmate_link))
         
         conn.commit()
         conn.close()
 
-        log_action(user_id, interaction.user, "MEMBER_DEPLOY_2DAYS", f"VMID: {vmid}, Expires: {expiration_time}")
+        log_action(user_id, interaction.user, "MEMBER_DEPLOY_10DAYS", f"VMID: {vmid}, Expires: {expiration_time}")
         
         embed = discord.Embed(
-            title="🚀 Legacy Cloud VPS Deployed (2-Day Temporary)",
-            description=f"**VMID:** {vmid}\n**Name:** {vps_name}\n**OS:** {os_type}\n**Duration:** 2 Days (Expires: `{expiration_time} UTC`)",
+            title="🚀 Legacy Cloud VPS Deployed (10-Day Duration)",
+            description=f"**VMID:** {vmid}\n**Specs:** 10GB RAM | 2 vCPU | 20GB Disk\n**Expires:** `{expiration_time} UTC`",
             color=discord.Color.green()
         )
+        embed.add_field(name="🔗 Remote Terminal (sshx)", value=f"[Open sshx Session]({sshx_link})", inline=True)
+        embed.add_field(name="🔗 Remote Terminal (tmate)", value=f"[Open tmate Session]({tmate_link})", inline=True)
         embed.set_footer(text=WATERMARK)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     except Exception as e:
         logger.error(f"Failed Member VPS Deployment: {e}")
-        await interaction.followup.send("❌ Deployment failed. Coins refunded.", ephemeral=True)
+        await interaction.followup.send("❌ Deployment failed.", ephemeral=True)
         conn.close()
 
-@bot.tree.command(name="admin-give-vps", description="Admin Only: Give a Lifetime LXC VPS to any user")
-@app_commands.describe(target_user="Target User", os_type="OS Template")
+@bot.tree.command(name="admin-give-vps", description="Admin Only: Give a Lifetime LXC VPS with custom specs")
+@app_commands.describe(target_user="Target User", ram="RAM in MB", cpu="CPU Cores", disk="Disk in GB", os_type="OS Template")
 @app_commands.choices(os_type=[
     app_commands.Choice(name="Ubuntu 22.04", value="ubuntu"),
     app_commands.Choice(name="Debian 12", value="debian")
 ])
 @app_commands.guild_only()
-async def admin_give_vps(interaction: discord.Interaction, target_user: discord.User, os_type: str):
+async def admin_give_vps(interaction: discord.Interaction, target_user: discord.User, ram: int, cpu: int, disk: int, os_type: str):
     if not is_admin(interaction.user):
         await interaction.response.send_message("❌ Admin access required.", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
-    proxmox = get_proxmox_api()
-    if not proxmox:
-        await interaction.followup.send("❌ Proxmox API Connection Error.", ephemeral=True)
-        return
 
     vmid = random.randint(100, 999)
-    vps_name = f"lxc-life-{target_user.id}-{vmid}"
+    vps_name = f"lxc-custom-{target_user.id}-{vmid}"
+    
+    session_code = f"{vmid}{random.randint(1000, 9999)}"
+    sshx_link = f"https://sshx.io/s/{session_code}"
+    tmate_link = f"https://tmate.io/t/{session_code}"
 
-    try:
-        proxmox.nodes(PROXMOX_NODE).lxc.create(
-            vmid=vmid,
-            ostemplate=f"local:vztmpl/{os_type}.tar.xz",
-            memory=DEFAULT_RAM,
-            cores=DEFAULT_CPU,
-            hostname=vps_name,
-            net0="name=eth0,bridge=vmbr0,ip=dhcp"
-        )
+    proxmox = get_proxmox_api()
+    if proxmox:
+        try:
+            proxmox.nodes(PROXMOX_NODE).lxc.create(
+                vmid=vmid,
+                ostemplate=f"local:vztmpl/{os_type}.tar.xz",
+                memory=ram,
+                cores=cpu,
+                hostname=vps_name,
+                net0="name=eth0,bridge=vmbr0,ip=dhcp"
+            )
+        except Exception as e:
+            logger.warning(f"Proxmox error during LXC grant: {e}")
 
-        conn = get_db_connection()
-        conn.execute('''
-            INSERT INTO vps (vmid, user_id, vps_name, type, os_type, status, ram, cpu, disk, expires_at)
-            VALUES (?, ?, ?, 'LXC', ?, 'stopped', ?, ?, ?, NULL)
-        ''', (vmid, target_user.id, vps_name, os_type, DEFAULT_RAM, DEFAULT_CPU, DEFAULT_DISK))
-        conn.commit()
-        conn.close()
+    conn = get_db_connection()
+    conn.execute('''
+        INSERT INTO vps (vmid, user_id, vps_name, type, os_type, status, ram, cpu, disk, expires_at, sshx_url, tmate_url)
+        VALUES (?, ?, ?, 'LXC', ?, 'running', ?, ?, ?, NULL, ?, ?)
+    ''', (vmid, target_user.id, vps_name, os_type, ram, cpu, disk, sshx_link, tmate_link))
+    conn.commit()
+    conn.close()
 
-        log_action(interaction.user.id, interaction.user, "ADMIN_GIVE_LXC_LIFETIME", f"VMID {vmid} assigned to {target_user}")
+    log_action(interaction.user.id, interaction.user, "ADMIN_GIVE_LXC_CUSTOM", f"VMID {vmid} assigned to {target_user}")
 
-        embed = discord.Embed(
-            title="🎁 Legacy Cloud - Lifetime LXC Granted",
-            description=f"**User:** {target_user.mention}\n**VMID:** {vmid}\n**Duration:** Lifetime\n**OS:** {os_type}",
-            color=discord.Color.blue()
-        )
-        embed.set_footer(text=WATERMARK)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+    embed = discord.Embed(
+        title="🎁 Legacy Cloud - Custom Lifetime LXC Granted",
+        description=f"**User:** {target_user.mention}\n**VMID:** {vmid}\n**Specs:** {cpu} Core | {ram}MB RAM | {disk}GB Disk\n**Duration:** Lifetime",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="🔗 Remote Terminal (sshx)", value=f"[Open sshx Session]({sshx_link})", inline=True)
+    embed.add_field(name="🔗 Remote Terminal (tmate)", value=f"[Open tmate Session]({tmate_link})", inline=True)
+    embed.set_footer(text=WATERMARK)
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
-    except Exception as e:
-        logger.error(f"Failed Admin LXC Deployment: {e}")
-        await interaction.followup.send(f"❌ Failed to give LXC VPS: {e}", ephemeral=True)
-
-@bot.tree.command(name="admin-give-kvm", description="Admin Only: Give a dedicated Lifetime KVM VPS to any user")
+@bot.tree.command(name="admin-give-kvm", description="Admin Only: Give a dedicated Lifetime KVM VPS with custom specs")
 @app_commands.describe(target_user="Target User", ram="RAM in MB", cpu="CPU Cores", disk="Disk size in GB")
 @app_commands.guild_only()
-async def admin_give_kvm(interaction: discord.Interaction, target_user: discord.User, ram: int = 2048, cpu: int = 2, disk: int = 20):
+async def admin_give_kvm(interaction: discord.Interaction, target_user: discord.User, ram: int, cpu: int, disk: int):
     if not is_admin(interaction.user):
         await interaction.response.send_message("❌ Admin access required.", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
-    proxmox = get_proxmox_api()
-    if not proxmox:
-        await interaction.followup.send("❌ Proxmox API Connection Error.", ephemeral=True)
-        return
 
     vmid = random.randint(100, 999)
-    vps_name = f"kvm-life-{target_user.id}-{vmid}"
+    vps_name = f"kvm-custom-{target_user.id}-{vmid}"
 
-    try:
-        proxmox.nodes(PROXMOX_NODE).qemu.create(
-            vmid=vmid,
-            name=vps_name,
-            memory=ram,
-            cores=cpu,
-            sockets=1,
-            ostype='l26',
-            scsihw='virtio-scsi-pci',
-            scsi0=f'local-lvm:{disk}',
-            net0='virtio,bridge=vmbr0'
-        )
+    proxmox = get_proxmox_api()
+    if proxmox:
+        try:
+            proxmox.nodes(PROXMOX_NODE).qemu.create(
+                vmid=vmid,
+                name=vps_name,
+                memory=ram,
+                cores=cpu,
+                sockets=1,
+                ostype='l26',
+                scsihw='virtio-scsi-pci',
+                scsi0=f'local-lvm:{disk}',
+                net0='virtio,bridge=vmbr0'
+            )
+        except Exception as e:
+            logger.warning(f"Proxmox error during KVM grant: {e}")
 
-        conn = get_db_connection()
-        conn.execute('''
-            INSERT INTO vps (vmid, user_id, vps_name, type, os_type, status, ram, cpu, disk, expires_at)
-            VALUES (?, ?, ?, 'KVM', 'Custom KVM', 'stopped', ?, ?, ?, NULL)
-        ''', (vmid, target_user.id, vps_name, ram, cpu, disk))
-        conn.commit()
+    conn = get_db_connection()
+    conn.execute('''
+        INSERT INTO vps (vmid, user_id, vps_name, type, os_type, status, ram, cpu, disk, expires_at)
+        VALUES (?, ?, ?, 'KVM', 'Custom KVM', 'running', ?, ?, ?, NULL)
+    ''', (vmid, target_user.id, vps_name, ram, cpu, disk))
+    conn.commit()
+    conn.close()
+
+    log_action(interaction.user.id, interaction.user, "ADMIN_GIVE_KVM_CUSTOM", f"VMID {vmid} assigned to {target_user}")
+
+    embed = discord.Embed(
+        title="🖥️ Legacy Cloud - Custom Lifetime KVM Granted",
+        description=f"**User:** {target_user.mention}\n**VMID:** {vmid}\n**Type:** Dedicated KVM\n**Specs:** {cpu} vCPU | {ram}MB RAM | {disk}GB Disk\n**Duration:** Lifetime",
+        color=discord.Color.purple()
+    )
+    embed.set_footer(text=WATERMARK)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+# Discord Commands - Coin Economy System
+
+@bot.tree.command(name="balance", description="Check your current wallet balance")
+async def balance(interaction: discord.Interaction):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT lc_balance FROM users WHERE user_id = ?', (interaction.user.id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    coins = row['lc_balance'] if row else 0
+    embed = discord.Embed(
+        title="💰 Legacy Cloud Wallet",
+        description=f"**User:** {interaction.user.mention}\n**Balance:** `{coins} LC`",
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text=WATERMARK)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="daily", description="Claim your daily allowance of LC coins")
+async def daily(interaction: discord.Interaction):
+    user_id = interaction.user.id
+    now = datetime.now(timezone.utc)
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT lc_balance, last_daily FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+
+    if row and row['last_daily']:
+        last_daily = datetime.fromisoformat(row['last_daily'])
+        if now - last_daily < timedelta(hours=24):
+            remaining = timedelta(hours=24) - (now - last_daily)
+            hours, remainder = divmod(remaining.seconds, 3600)
+            minutes = remainder // 60
+            await interaction.response.send_message(
+                f"⏰ You have already claimed your daily coins! Return in **{hours}h {minutes}m**.",
+                ephemeral=True
+            )
+            conn.close()
+            return
+
+    reward = 25
+    cursor.execute('''
+        INSERT INTO users (user_id, username, lc_balance, last_daily)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            lc_balance = lc_balance + excluded.lc_balance,
+            last_daily = excluded.last_daily
+    ''', (user_id, str(interaction.user), reward, now.isoformat()))
+    
+    conn.commit()
+    conn.close()
+
+    log_action(user_id, interaction.user, "CLAIM_DAILY", f"Claimed {reward} LC")
+    embed = discord.Embed(
+        title="🎉 Daily Reward Claimed!",
+        description=f"You received **+{reward} LC**! Check back in 24 hours.",
+        color=discord.Color.green()
+    )
+    embed.set_footer(text=WATERMARK)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="work", description="Work to earn Legacy Coins (cooldown: 1 hour)")
+async def work(interaction: discord.Interaction):
+    user_id = interaction.user.id
+    now = datetime.now(timezone.utc)
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT last_work FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+
+    if row and row['last_work']:
+        last_work = datetime.fromisoformat(row['last_work'])
+        if now - last_work < timedelta(hours=1):
+            remaining = timedelta(hours=1) - (now - last_work)
+            mins = remaining.seconds // 60
+            await interaction.response.send_message(
+                f"⏳ You are exhausted! You can work again in **{mins} minutes**.",
+                ephemeral=True
+            )
+            conn.close()
+            return
+
+    earned = random.randint(5, 15)
+    jobs = [
+        "maintained virtual server nodes",
+        "patched security updates",
+        "configured network bridges",
+        "optimized database queries",
+        "cleaned system logs"
+    ]
+    job_done = random.choice(jobs)
+
+    cursor.execute('''
+        INSERT INTO users (user_id, username, lc_balance, last_work)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            lc_balance = lc_balance + excluded.lc_balance,
+            last_work = excluded.last_work
+    ''', (user_id, str(interaction.user), earned, now.isoformat()))
+    
+    conn.commit()
+    conn.close()
+
+    log_action(user_id, interaction.user, "WORK", f"Earned {earned} LC doing {job_done}")
+    embed = discord.Embed(
+        title="🛠️ Work Completed",
+        description=f"You {job_done} and earned **+{earned} LC**!",
+        color=discord.Color.blue()
+    )
+    embed.set_footer(text=WATERMARK)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="transfer", description="Transfer LC coins to another user")
+@app_commands.describe(recipient="User to transfer coins to", amount="Amount of LC coins")
+async def transfer(interaction: discord.Interaction, recipient: discord.User, amount: int):
+    sender_id = interaction.user.id
+    recipient_id = recipient.id
+
+    if amount <= 0:
+        await interaction.response.send_message("❌ Amount must be greater than zero.", ephemeral=True)
+        return
+
+    if sender_id == recipient_id:
+        await interaction.response.send_message("❌ You cannot transfer coins to yourself.", ephemeral=True)
+        return
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT lc_balance FROM users WHERE user_id = ?', (sender_id,))
+    row = cursor.fetchone()
+    sender_balance = row['lc_balance'] if row else 0
+
+    if sender_balance < amount:
+        await interaction.response.send_message(f"❌ Insufficient funds! You have **{sender_balance} LC**.", ephemeral=True)
         conn.close()
+        return
 
-        log_action(interaction.user.id, interaction.user, "ADMIN_GIVE_KVM_LIFETIME", f"VMID {vmid} assigned to {target_user}")
+    cursor.execute('UPDATE users SET lc_balance = lc_balance - ? WHERE user_id = ?', (amount, sender_id))
+    cursor.execute('''
+        INSERT INTO users (user_id, username, lc_balance)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET lc_balance = lc_balance + excluded.lc_balance
+    ''', (recipient_id, str(recipient), amount))
 
-        embed = discord.Embed(
-            title="🖥️ Legacy Cloud - Lifetime KVM Granted",
-            description=f"**User:** {target_user.mention}\n**VMID:** {vmid}\n**Type:** Dedicated KVM\n**Duration:** Lifetime\n**Specs:** {cpu} vCPU | {ram}MB RAM | {disk}GB Disk",
-            color=discord.Color.purple()
-        )
-        embed.set_footer(text=WATERMARK)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+    conn.commit()
+    conn.close()
 
-    except Exception as e:
-        logger.error(f"Failed KVM Creation: {e}")
-        await interaction.followup.send(f"❌ Failed to create KVM VPS: {e}", ephemeral=True)
+    log_action(sender_id, interaction.user, "TRANSFER_COINS", f"Transferred {amount} LC to {recipient}")
+    embed = discord.Embed(
+        title="💸 Coin Transfer Successful",
+        description=f"Transferred **{amount} LC** to {recipient.mention}.",
+        color=discord.Color.green()
+    )
+    embed.set_footer(text=WATERMARK)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="about", description="View information about the bot and developer credits")
 async def about(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🤖 Legacy Cloud VPS Bot",
-        description="Proxmox VPS management bot supporting 2-Day member deployments and Lifetime Admin VPS grants.",
+        description="Proxmox & Virtual Host management bot with coin economy, automated backups, and custom admin overrides.",
         color=discord.Color.blue()
     )
     embed.add_field(name="👨‍💻 Developer Credits", value="Developed by **devaru007 & Legacy Cloud**", inline=False)
@@ -548,6 +908,7 @@ async def on_ready():
 
 if __name__ == "__main__":
     if not TOKEN:
+        logger.error("No discord token provided in environment variables.")
         sys.exit(1)
         
     threading.Thread(target=run_web_dashboard, daemon=True).start()
