@@ -477,45 +477,52 @@ def update_balance():
 
 @app.route('/deploy_admin', methods=['POST'])
 def deploy_admin():
-    if not session.get('logged_in'): return redirect(url_for('index'))
-    user_id = int(request.form['user_id'])
-    vtype = request.form['type']
-    ram = int(request.form['ram'])
-    cpu = int(request.form['cpu'])
-    disk = int(request.form['disk'])
-
-    vmid = random.randint(100, 999)
-    vps_name = f"{vtype.lower()}-admin-{user_id}-{vmid}"
+    if not session.get('logged_in'): 
+        return redirect(url_for('index'))
     
-    proxmox = get_proxmox_api()
-    if proxmox:
+    try:
+        user_id = int(request.form['user_id'])
+        vtype = request.form['type']
+        ram = int(request.form['ram'])
+        cpu = int(request.form['cpu'])
+        disk = int(request.form['disk'])
+
+        vmid = random.randint(100, 999)
+        vps_name = f"{vtype.lower()}-admin-{user_id}-{vmid}"
+        
         try:
-            if vtype == 'KVM':
-                proxmox.nodes(PROXMOX_NODE).qemu.create(
-                    vmid=vmid, name=vps_name, memory=ram, cores=cpu,
-                    sockets=1, ostype='l26', scsihw='virtio-scsi-pci',
-                    scsi0=f'local-lvm:{disk}', net0='virtio,bridge=vmbr0'
-                )
-            else:
-                proxmox.nodes(PROXMOX_NODE).lxc.create(
-                    vmid=vmid, ostemplate="local:vztmpl/ubuntu.tar.xz",
-                    memory=ram, cores=cpu, hostname=vps_name, net0="name=eth0,bridge=vmbr0,ip=dhcp"
-                )
-        except Exception as e:
-            logger.error(f"Proxmox error during admin deploy: {e}")
+            proxmox = get_proxmox_api()
+            if proxmox:
+                if vtype == 'KVM':
+                    proxmox.nodes(PROXMOX_NODE).qemu.create(
+                        vmid=vmid, name=vps_name, memory=ram, cores=cpu,
+                        sockets=1, ostype='l26', scsihw='virtio-scsi-pci',
+                        scsi0=f'local-lvm:{disk}', net0='virtio,bridge=vmbr0'
+                    )
+                else:
+                    proxmox.nodes(PROXMOX_NODE).lxc.create(
+                        vmid=vmid, ostemplate="local:vztmpl/ubuntu.tar.xz",
+                        memory=ram, cores=cpu, hostname=vps_name, net0="name=eth0,bridge=vmbr0,ip=dhcp"
+                    )
+        except Exception as pve_err:
+            logger.error(f"Proxmox error during admin deploy: {pve_err}")
 
-    session_code = f"{vmid}{random.randint(1000, 9999)}"
-    sshx_link = f"https://sshx.io/s/{session_code}"
-    tmate_link = f"https://tmate.io/t/{session_code}"
+        session_code = f"{vmid}{random.randint(1000, 9999)}"
+        sshx_link = f"https://sshx.io/s/{session_code}"
+        tmate_link = f"https://tmate.io/t/{session_code}"
 
-    conn = get_db_connection()
-    conn.execute('''
-        INSERT INTO vps (vmid, user_id, vps_name, type, os_type, status, ram, cpu, disk, expires_at, sshx_url, tmate_url)
-        VALUES (?, ?, ?, ?, 'Custom Admin', 'running', ?, ?, ?, NULL, ?, ?)
-    ''', (vmid, user_id, vps_name, vtype, ram, cpu, disk, sshx_link, tmate_link))
-    conn.commit()
-    conn.close()
-    log_action(ADMIN_ID, "Dashboard Admin", f"DEPLOY_{vtype}_CUSTOM", f"VMID {vmid} ({ram}MB RAM, {cpu} CPU, {disk}GB Disk) for {user_id}")
+        conn = get_db_connection()
+        conn.execute('''
+            INSERT INTO vps (vmid, user_id, vps_name, type, os_type, status, ram, cpu, disk, expires_at, sshx_url, tmate_url)
+            VALUES (?, ?, ?, ?, 'Custom Admin', 'running', ?, ?, ?, NULL, ?, ?)
+        ''', (vmid, user_id, vps_name, vtype, ram, cpu, disk, sshx_link, tmate_link))
+        conn.commit()
+        conn.close()
+
+        log_action(ADMIN_ID, "Dashboard Admin", f"DEPLOY_{vtype}_CUSTOM", f"VMID {vmid} ({ram}MB RAM, {cpu} CPU, {disk}GB Disk) for {user_id}")
+
+    except Exception as e:
+        logger.error(f"Fatal error in deploy_admin: {e}")
 
     return redirect(url_for('index'))
 
@@ -806,137 +813,53 @@ async def work(interaction: discord.Interaction):
         last_work = datetime.fromisoformat(row['last_work'])
         if now - last_work < timedelta(hours=1):
             remaining = timedelta(hours=1) - (now - last_work)
-            mins = remaining.seconds // 60
+            minutes = remaining.seconds // 60
             await interaction.response.send_message(
-                f"⏳ You are exhausted! You can work again in **{mins} minutes**.",
+                f"⏰ You are tired! Rest for another **{minutes}m** before working again.",
                 ephemeral=True
             )
             conn.close()
             return
 
     earned = random.randint(5, 15)
-    jobs = [
-        "maintained virtual server nodes",
-        "patched security updates",
-        "configured network bridges",
-        "optimized database queries",
-        "cleaned system logs"
-    ]
-    job_done = random.choice(jobs)
-
     cursor.execute('''
         INSERT INTO users (user_id, username, lc_balance, last_work)
         VALUES (?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
-            lc_balance = lc_balance + excluded.lc_balance,
-            last_work = excluded.last_work
-    ''', (user_id, str(interaction.user), earned, now.isoformat()))
+            lc_balance = lc_balance + ?,
+            last_work = ?
+    ''', (user_id, str(interaction.user), earned, now.isoformat(), earned, now.isoformat()))
     
     conn.commit()
     conn.close()
 
-    log_action(user_id, interaction.user, "WORK", f"Earned {earned} LC doing {job_done}")
+    log_action(user_id, interaction.user, "WORK", f"Earned {earned} LC")
     embed = discord.Embed(
-        title="🛠️ Work Completed",
-        description=f"You {job_done} and earned **+{earned} LC**!",
+        title="💼 Shift Completed!",
+        description=f"You worked hard and earned **+{earned} LC**!",
         color=discord.Color.blue()
     )
-    embed.set_footer(text=WATERMARK)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@bot.tree.command(name="transfer", description="Transfer LC coins to another user")
-@app_commands.describe(recipient="User to transfer coins to", amount="Amount of LC coins")
-async def transfer(interaction: discord.Interaction, recipient: discord.User, amount: int):
-    sender_id = interaction.user.id
-    recipient_id = recipient.id
-
-    if amount <= 0:
-        await interaction.response.send_message("❌ Amount must be greater than zero.", ephemeral=True)
-        return
-
-    if sender_id == recipient_id:
-        await interaction.response.send_message("❌ You cannot transfer coins to yourself.", ephemeral=True)
-        return
-
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('SELECT lc_balance FROM users WHERE user_id = ?', (sender_id,))
-    row = cursor.fetchone()
-    sender_balance = row['lc_balance'] if row else 0
-
-    if sender_balance < amount:
-        await interaction.response.send_message(f"❌ Insufficient funds! You have **{sender_balance} LC**.", ephemeral=True)
-        conn.close()
-        return
-
-    cursor.execute('UPDATE users SET lc_balance = lc_balance - ? WHERE user_id = ?', (amount, sender_id))
-    cursor.execute('''
-        INSERT INTO users (user_id, username, lc_balance)
-        VALUES (?, ?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET lc_balance = lc_balance + excluded.lc_balance
-    ''', (recipient_id, str(recipient), amount))
-
-    conn.commit()
-    conn.close()
-
-    log_action(sender_id, interaction.user, "TRANSFER_COINS", f"Transferred {amount} LC to {recipient}")
-    embed = discord.Embed(
-        title="💸 Coin Transfer Successful",
-        description=f"Transferred **{amount} LC** to {recipient.mention}.",
-        color=discord.Color.green()
-    )
-    embed.set_footer(text=WATERMARK)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@bot.tree.command(name="about", description="View detailed system information, features, and developer credits")
-async def about(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="🤖 Legacy Cloud VPS Bot",
-        description="A high-performance Proxmox & Virtual Host management bot featuring automated provisioning, integrated coin economy, web dashboard, and automated server backups.",
-        color=discord.Color.blue()
-    )
-    
-    embed.add_field(
-        name="⚡ Core Features",
-        value=(
-            "• **Automated Deployments:** Fast member & admin LXC/KVM server provisioning.\n"
-            "• **Coin Economy:** Earn LC via daily claims and tasks to fund instances.\n"
-            "• **Web Control Panel:** Dynamic multi-theme dashboard with real-time audit logs.\n"
-            "• **Auto Backups:** Server state preservation upon instance expiration."
-        ),
-        inline=False
-    )
-    
-    embed.add_field(
-        name="📋 System Status",
-        value="• **Platform:** Legacy Cloud Engine\n• **Status:** Active & Operational",
-        inline=True
-    )
-    
-    embed.add_field(
-        name="👨‍💻 Developer Credits",
-        value="Developed by **devaru007 & Legacy Cloud**",
-        inline=True
-    )
-    
     embed.set_footer(text=WATERMARK)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.event
 async def on_ready():
-    logger.info(f'Legacy Cloud Bot Online: {bot.user}')
-    cleanup_expired_vps.start()
+    logger.info(f"Logged in as {bot.user.name} ({bot.user.id})")
     try:
-        await bot.tree.sync()
+        synced = await bot.tree.sync()
+        logger.info(f"Synced {len(synced)} command(s)")
     except Exception as e:
-        logger.error(f'Sync error: {e}')
+        logger.error(f"Failed to sync commands: {e}")
+
+    await bot.change_presence(activity=discord.Game(name=BOT_STATUS_NAME))
+    if not cleanup_expired_vps.is_running():
+        cleanup_expired_vps.start()
 
 if __name__ == "__main__":
-    if not TOKEN:
-        logger.error("No discord token provided in environment variables.")
-        sys.exit(1)
-        
-    threading.Thread(target=run_web_dashboard, daemon=True).start()
-    logger.info(f"Dashboard online locally at http://{DASHBOARD_HOST}:{DASHBOARD_PORT}")
+    t = threading.Thread(target=run_web_dashboard, daemon=True)
+    t.start()
     
-    bot.run(TOKEN)
+    if TOKEN:
+        bot.run(TOKEN)
+    else:
+        logger.error("No DISCORD_TOKEN provided in environment variables!")
