@@ -180,20 +180,21 @@ HTML_TEMPLATE = '''
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Legacy Cloud - Admin Control Panel</title>
     <style>
-        :root[data-theme="cyberpunk"] {
+        /* CSS Variables per Theme */
+        body[data-theme="cyberpunk"] {
             --bg-color: #0d0e15;
             --card-bg: #131520;
             --accent-cyan: #00f0ff;
             --accent-pink: #ff007f;
             --accent-purple: #7000ff;
             --text-main: #e2e8f0;
-            --text-muted: #64748b;
+            --text-muted: #94a3b8;
             --border-color: #1e2235;
             --input-bg: #090a0f;
             --btn-grad: linear-gradient(135deg, #7000ff, #00f0ff);
         }
 
-        :root[data-theme="midnight"] {
+        body[data-theme="midnight"] {
             --bg-color: #0f172a;
             --card-bg: #1e293b;
             --accent-cyan: #38bdf8;
@@ -206,7 +207,7 @@ HTML_TEMPLATE = '''
             --btn-grad: linear-gradient(135deg, #3b82f6, #1d4ed8);
         }
 
-        :root[data-theme="matrix"] {
+        body[data-theme="matrix"] {
             --bg-color: #050b05;
             --card-bg: #0a140a;
             --accent-cyan: #00ff66;
@@ -219,13 +220,13 @@ HTML_TEMPLATE = '''
             --btn-grad: linear-gradient(135deg, #059669, #00ff66);
         }
 
-        body {
+        html, body {
+            background-color: var(--bg-color) !important;
+            color: var(--text-main) !important;
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background-color: var(--bg-color);
-            color: var(--text-main);
             margin: 0;
             padding: 30px;
-            transition: all 0.3s ease;
+            transition: background-color 0.3s ease, color 0.3s ease;
         }
 
         .container { max-width: 1280px; margin: auto; }
@@ -251,7 +252,7 @@ HTML_TEMPLATE = '''
         .credits { color: var(--text-muted); font-size: 14px; margin-top: 5px; }
 
         .card {
-            background: var(--card-bg);
+            background: var(--card-bg) !important;
             border: 1px solid var(--border-color);
             border-radius: 12px;
             padding: 24px;
@@ -259,7 +260,7 @@ HTML_TEMPLATE = '''
             box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
         }
 
-        h3 { color: var(--accent-cyan); margin-top: 0; font-size: 18px; }
+        h3 { color: var(--accent-cyan) !important; margin-top: 0; font-size: 18px; }
 
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 25px; }
 
@@ -267,13 +268,15 @@ HTML_TEMPLATE = '''
             width: 100%;
             padding: 12px 16px;
             margin: 10px 0;
-            background: var(--input-bg);
-            color: var(--text-main);
+            background: var(--input-bg) !important;
+            color: var(--text-main) !important;
             border: 1px solid var(--border-color);
             border-radius: 8px;
             box-sizing: border-box;
             outline: none;
         }
+
+        input::placeholder { color: var(--text-muted); }
 
         input:focus, select:focus { border-color: var(--accent-cyan); }
 
