@@ -36,8 +36,17 @@ cd vps-bot
 
 apt install pip -y
 
+pip install davey --break-system-packages --ignore-installed
+pip install discord --break-system-packages --ignore-installed
+pip install dotenv --break-system-packages --ignore-installed
+pip install PyNaCl --break-system-packages --ignore-installed
+pip install paramiko --break-system-packages --ignore-installed
+pip install flask --break-system-packages --ignore-installed
+pip install flask_cors --break-system-packages --ignore-installed
+
 
 pip install -r requirements.txt
+
 
 cp .env.example .env
 
