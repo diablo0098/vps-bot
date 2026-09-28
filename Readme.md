@@ -46,9 +46,3 @@ ls -la webssh.html bot.py
 
 
 python bot.py
-
-
-
-
-
-
