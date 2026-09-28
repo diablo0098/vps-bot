@@ -1,45 +1,54 @@
-# ⚡ Legacy Cloud Proxmox VPS Bot
+# 🖥️ Legacy Cloud Deploy Bot V1 — Discord VPS & LXC Management Bot
 
-A feature-rich Discord bot and web control panel designed for Proxmox VE VPS deployment, internal coin economy (LC), remote terminal access (sshx & tmate), automated backups, and activity logging.
-
-**Developed by devaru007 & Legacy Cloud**
+A full-featured Discord bot for managing Virtual Private Servers (VPS) and LXC containers, featuring an integrated **WebSSH terminal** (xterm.js), an internal **economy system**, **automated inactivity monitoring**, and **auto-renewal workflows**. Built with `discord.py`, `Flask`, `Paramiko`, and SQLite in WAL mode.
 
 ---
 
-## 🌟 Key Features
+## ✨ Features
 
-* **Member VPS Limits:** Members can deploy LXC VPS instances (`10GB RAM`, `20GB Disk`, `2 vCPU`) via `/deploy`, which expire automatically after **10 Days**.
-* **Automated Expiration, Backup & DM:** When a 10-day member VPS expires, the system automatically creates a full backup, purges the instance from Proxmox, stores the backup in the web dashboard, and sends a DM to the user:
-  > *"Your VPS has been deleted because 10 days have passed. If you want your backup, please talk to an admin."*
-* **Admin Unlimited Grants:** Admins have complete control to provision **LXC** (`/admin-give-vps`) or **Dedicated KVM Virtual Machines** (`/admin-give-kvm`) with **custom RAM, Disk, and CPU specs** with **Lifetime** duration.
-* **Remote Terminal Access:** Built-in support to instantly generate **sshx** and **tmate** web terminal session links for easy SSH access.
-* **Web Control Dashboard:** Integrated Flask dashboard running locally on `http://127.0.0.1:3001` (with Cloudflare HTTPS tunnel) to manage user LC balances, trigger manual backups, inspect stored expired backups, deploy KVMs, and review audit logs.
+- 🖥️ **Live WebSSH Terminal**: Built-in Flask server streaming interactive xterm.js SSH terminal sessions.
+- ⚙️ **VPS Container Control**: Start, stop, reboot, reinstall, and resize LXC containers directly from Discord.
+- 🪙 **Virtual Economy**: Users can work, claim daily coin rewards, and pay each other to earn currency for server renewals.
+- 🔄 **Auto & Manual Renewals**: Automatic container extension using user coin balances before expiry.
+- 🚨 **Inactivity Tracking**: Monitors user activity (messages, reactions, voice) and sends automatic DM warnings to inactive users.
+- ⚡ **High-Performance Database**: SQLite configured with Write-Ahead Logging (WAL) for high concurrency.
 
 ---
 
-## 🛠️ Installation & Setup Guide
+## 📋 Prerequisites
 
-### Step 1: Clone the Repository
+Before running the bot, ensure you have:
+
+- **Python 3.10+** installed on your host system.
+- A **Discord Bot Token** with `Message Content`, `Server Members`, and `Presence` Privileged Gateway Intents enabled in the [Discord Developer Portal](https://discord.com/developers/applications).
+- Port `5000` (or your configured port) open on your firewall for the WebSSH interface.
+
+---
+
+## 🚀 Installation & Setup
+
+### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/diablo0098/vps-bot.git
-
+git clone https://github.com/diablo0098/vps-bot
 cd vps-bot
 
-Step 2: Install Dependencies
-Install all necessary packages using pip:
 
-```bash
+apt install pip -y
+
+
 pip install -r requirements.txt
 
-Step 3: Configure Environment Variables
-Create a .env file in the root directory by copying or creating a new one:
-
-```bash
 cp .env.example .env
 
-```bash
-nano .env 
 
-```bash
-python3 bot.py
+ls -la webssh.html bot.py
+
+
+python bot.py
+
+
+
+
+
+
